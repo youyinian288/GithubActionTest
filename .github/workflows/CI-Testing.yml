@@ -1,302 +1,232 @@
-# Workflow(Action) 名稱
+# Workflow(Action) 名称
 name: CI-Testing
 
-# Actions Log 的標題名稱
+# Actions 日志的标题名称（PR标题或分支名）
 run-name: "[CI-Testing] ${{ github.event.pull_request.title || github.ref }}"
 
-# 同個 Concurrency Group 如果有新的 Job 會取消正在跑的
-# 例如 Push Commit 觸發的任務還沒執行就又 Push Commit 時，會取消前一個任務
+# 并发控制：同组任务有新触发时，取消正在运行的旧任务
+# 避免多次提交导致的资源浪费（如连续push时）
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# 觸發事件
+# 触发事件配置
 on:
-  # PR 事件
+  # PR相关事件触发
   pull_request:
-    # PR - 開啟、重開、有新 Push Commit 時
+    # 触发时机：PR创建、重新打开、有新提交时
     types: [opened, synchronize, reopened]
-  # 手動表單觸發
+  # 手动触发（可通过GitHub界面选择参数）
   workflow_dispatch:
-    # 表單 Inputs 欄位
     inputs:
-      # 執行的 Test Fastlane Lane
+      # 要执行的Fastlane测试任务
       TEST_LANE:
-        description: 'Test Lane'
+        description: '测试任务（Fastlane Lane）'
         default: 'run_unit_tests'
         type: choice
         options:
-          - run_unit_tests
-          - run_all_tests
-  # 其他 Workflow 呼叫此 Workflow 觸發
-  # Nightly Build 會呼叫使用
+          - run_unit_tests  # 仅运行单元测试
+          - run_all_tests   # 运行所有测试
+  # 允许被其他工作流调用（如夜间构建）
   workflow_call:
-    # 表單 Inputs 欄位
     inputs:
-      # 執行的 Test Fastlane Lane
+      # 测试任务（无choice类型，兼容workflow_call）
       TEST_LANE:
-        description: 'Test Lane'
+        description: '测试任务（Fastlane Lane）'
         default: 'run_unit_tests'
-        # workflow_call inputs 不支援 choice
         type: string
+      # 要检查的分支
       BRANCH:
-        description: 'Branch'
+        description: '目标分支'
         type: string
-  
-# Job 工作項目
-# Job 會並發執行
+
+# 任务定义（Jobs会并行执行，此处仅一个testing任务）
 jobs:
-  # Job ID
   testing:
-    # Job 名稱 (可省略，有設定在 Log 顯示比較好讀)
-    name: Testing
-    
-    # Runner Label - 使用 GitHub Hosted Runner macos-15 來執行工作
-    # 請注意：因為此專案是 Public Repo 可以無限免費使用
-    # 請注意：因為此專案是 Public Repo 可以無限免費使用
-    # 請注意：因為此專案是 Public Repo 可以無限免費使用
-    # 如果是 Private Repo 需要按計量收費，macOS 機器是最貴的(10倍)，可能跑 10 次就達到 2,000 分鐘免費上限
-    # 建議使用 self-hosted Runner
+    name: 执行测试
+    # 运行环境：使用GitHub托管的macOS-15 runner（适合iOS项目）
+    # 注意：公共仓库可免费使用，私有仓库按用量计费，建议私有项目使用自托管runner
     runs-on: macos-15
-
-    # 設定最長 Timeout 時間，防止異常情況發生時無止盡的等待
+    # 超时时间：防止任务无限挂起（最长30分钟）
     timeout-minutes: 30
-
-    # use zsh
-    # 可省略，只是我習慣用 zsh，預設是 bash
+    # 默认使用zsh shell（替代默认bash）
     defaults:
       run:
         shell: zsh {0}
-          
-    # 工作步驟
-    # 工作步驟會照順序執行  
+
+    # 权限配置：解决创建check run等操作的权限问题
+    permissions:
+      checks: write  # 允许创建测试报告check run
+      pull-requests: write  # 允许向PR提交评论
+      contents: read  # 允许读取仓库代码
+
+    # 步骤定义（按顺序执行）
     steps:
-      # git clone 當前專案 & checkout 到執行的分支
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      # 1. 拉取代码到runner
+      - name: 拉取仓库代码
+        uses: actions/checkout@v4  # 更新到最新v4版本
         with:
-          # Git Large File Storage，我們的測試環境用不到
-          # default: false
-          lfs: false
-          
-          # 如果有指定則 Checkout 指定分支，沒有則使用預設(當前分支)
-          # 因 on: schedule 事件只能在 main 主分支執行，因此想做 Nightly Build 之類的工作就需要指定分支
-          # e.g. on: schedule -> main 分支，Nightly Build master 分支
+          lfs: false  # 不启用Git LFS（项目无需大文件支持）
+          #  checkout指定分支（如夜间构建需指定非默认分支时使用）
           ref: ${{ github.event.inputs.BRANCH || '' }}
 
-      # ========== Env Setup Steps ==========
-      
-      # 讀取專案指定的 XCode 版本
-      # 在後續之中，我們自己手動指定使用的 XCode_x.x.x.app
-      # 而不使用 xcversion，因為 xcversion 已經 sunset 不穩定。 
-      - name: Read .xcode-version
+      # ========== 环境配置步骤 ==========
+
+      # 2. 读取项目指定的Xcode版本（从.ruby-version文件）
+      - name: 读取Xcode版本
         id: read_xcode_version
         run: |
+          # 从项目根目录的.xcode-version文件读取版本号
           XCODE_VERSION=$(cat .xcode-version)
-          echo "XCODE_VERSION: ${XCODE_VERSION}"
+          echo "检测到Xcode版本: ${XCODE_VERSION}"
+          # 输出到GitHub环境变量，供后续步骤使用
           echo "xcode_version=${XCODE_VERSION}" >> $GITHUB_OUTPUT
 
-          # 也可以直接在這指定全域 XCode 版本，這樣就不用在後續步驟指定 DEVELOPER_DIR
-          # 但此指令需要 sudoer 權限，如果是 self-hosted runner 就要確定 runner 執行環境有 sudo 權限
-          # sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
-
-      # 讀取專案指定的 Ruby 版本
-      - name: Read .ruby-version
+      # 3. 读取项目指定的Ruby版本（从.ruby-version文件）
+      - name: 读取Ruby版本
         id: read_ruby_version
         run: |
+          # 从项目根目录的.ruby-version文件读取版本号
           RUBY_VERSION=$(cat .ruby-version)
-          echo "RUBY_VERSION: ${RUBY_VERSION}"
+          echo "检测到Ruby版本: ${RUBY_VERSION}"
+          # 输出到GitHub环境变量，供后续步骤使用
           echo "ruby_version=${RUBY_VERSION}" >> $GITHUB_OUTPUT
 
-      # 安裝或設定 Runner Ruby 版本成專案指定版本
-      - name: Set up Ruby
+      # 4. 配置Ruby环境（安装项目指定版本）
+      - name: 配置Ruby环境
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "${{ steps.read_ruby_version.outputs.ruby_version }}"
+          ruby-version: "${{ steps.read_ruby_version.outputs.ruby_version }}"  # 使用读取到的版本
 
-      # 可設可不設，原因是之前在 self-hosted 起多個 runner 跑 CI/CD 因為 cocoapods repos 是共用目錄
-      # 解決的問題是：有很小的機率會出現在同時 pod install 時拉 cocoapods repos 出現衝突(因為預設都是用) $HOME/.cocoapods/
-      # GitHub Hosted Runner 則不需此設定
-      # - name: Change Cocoapods Repos Folder
-      #   if: contains(runner.labels, 'self-hosted')
-      #   run: |
-      #     # 每個 Runner 用自己的 .cocoapods 資料夾，防止資源衝突
-      #     mkdir -p "$HOME/.cocoapods-${{ env.RUNNER_NAME }}/"
-      #     export CP_HOME_DIR="$HOME/.cocoapods-${{ env.RUNNER_NAME }}"
-      #     rm -f "$HOME/.cocoapods-${{ env.RUNNER_NAME }}/repos/cocoapods/.git/index.lock"
+      # ========== 缓存配置步骤（加速依赖安装） ==========
 
-      # ========== Cache Setting Steps ==========
-      # 請注意，就算是 self-hosted，Cache 目前也是 Cloud Cache 會計算用量
-      # 規則：7 天未 hit 自動刪除、單個 Cache 上限 10 GB、Action 成功才會 Cache
-      # Public Repo: 免費無限制
-      # Private Repo: 5 GB 起
-      # Self-hosted 可以自己用 shell script 撰寫 Cache & Restore 策略或使用其他工具協助
-      
-      # Bundle Cache (Gemfile)
-      # 對應 Makefile 中我們指定了 Bundle  安裝路徑 ./vendor 下
-      - name: Cache Bundle
+      # 5. 缓存Ruby依赖（Gemfile.lock对应依赖）
+      - name: 缓存Ruby依赖
         uses: actions/cache@v3
         with:
-          path: |
-            ./vendor
+          path: ./vendor  # 缓存路径（对应bundle config的安装目录）
+          # 缓存key：系统+依赖锁文件哈希（锁文件变更时重建缓存）
           key: ${{ runner.os }}-bundle-${{ hashFiles('Gemfile.lock') }}
+          # 恢复策略：未命中精确key时，使用最近的旧缓存
           restore-keys: |
             ${{ runner.os }}-bundle-
 
-      # CocoaPods Cache (Podfile)
-      # 默認就是 專案/Pods 下
-      - name: Cache CocoaPods
+      # 6. 缓存CocoaPods依赖（Podfile.lock对应依赖）
+      - name: 缓存CocoaPods依赖
         uses: actions/cache@v3
         with:
-          path: |
-            ./Product/Pods
+          path: ./Product/Pods  # 项目Pods目录路径
           key: ${{ runner.os }}-cocoapods-${{ hashFiles('Product/Podfile.lock') }}
           restore-keys: |
             ${{ runner.os }}-cocoapods-
 
-      # Mint cache
-      # 對應 Makefile 中我們指定的 Mint 安裝路徑 ./mint 下
-      - name: Cache Mint
+      # 7. 缓存Mint工具（Mintfile定义的工具）
+      - name: 缓存Mint工具
         uses: actions/cache@v3
         with:
-          path: ./mint
+          path: ./mint  # Mint安装路径
           key: ${{ runner.os }}-mint-${{ hashFiles('Mintfile') }}
           restore-keys: |
             ${{ runner.os }}-mint-
 
-      # ====================
+      # ========== 依赖安装步骤 ==========
 
-      # 專案 Setup & 依賴安裝
-      - name: Setup & Install Dependency
+      # 8. 项目初始化与依赖安装
+      - name: 初始化项目并安装依赖
         run: |
-          # 執行 Makefile 中封裝的 Setup 指令，對應成指令大概是：
-          # brew install mint
-          # bundle config set path 'vendor/bundle'
-          # bundle install
-          # mint bootstrap
-          # ...
-          # 等等 setup 指令
+          # 执行Makefile中的setup指令（如安装Mint、Bundle配置等）
           make setup
-
-          # 執行 Makefile 中封裝的 Install 指令，對應成指令大概是：
-          # mint run yonaskolb/XcodeGen --quiet
-          # bundle exec pod install
-          # ...
-          # 等等 install 指令
+          # 执行Makefile中的install指令（如生成Xcode项目、pod install等）
           make install
 
-      # 執行 Fastlane Unit 測試 Lane
-      - name: Run Tests
-        id: testing
-        # 指定工作目錄，這樣後續指令就不用在特別 cd ./Product/
-        working-directory: ./Product/
-        env:
-          # 測試計劃，全跑還是只跑單元測試
-          # 如為開 PR 觸發則使用 run_unit_tests，否則看 inputs.TEST_LANE 的值，預設值 run_all_tests
-          TEST_LANE: ${{ github.event_name == 'pull_request' && 'run_unit_tests' || github.event.inputs.TEST_LANE || 'run_all_tests' }}
-          
-          # 指定這個 Job 要使用 XCode_x.x.x 指定的版本執行
-          DEVELOPER_DIR: "/Applications/Xcode_${{ steps.read_xcode_version.outputs.xcode_version }}.app/Contents/Developer"
-          
-          # Repo -> Settings -> Actions secrets and variables -> variables
-          # 使用的模擬器名稱
-          SIMULATOR_NAME: ${{ vars.SIMULATOR_NAME }}
-          # 模擬器的 iOS 版本
-          SIMULATOR_IOS_VERSION: ${{ vars.SIMULATOR_IOS_VERSION }}
+      # ========== 执行测试步骤 ==========
 
-          # 當前 Runner 名稱
+      # 9. 运行测试（核心步骤）
+      - name: 执行测试
+        id: testing
+        working-directory: ./Product/  # 切换到Product目录执行
+        env:
+          # 测试任务选择：PR触发时默认仅跑单元测试，其他情况按输入值
+          TEST_LANE: ${{ github.event_name == 'pull_request' && 'run_unit_tests' || github.event.inputs.TEST_LANE || 'run_all_tests' }}
+          # 指定Xcode路径（使用读取到的版本）
+          DEVELOPER_DIR: "/Applications/Xcode_${{ steps.read_xcode_version.outputs.xcode_version }}.app/Contents/Developer"
+          # 模拟器配置（从仓库变量读取）
+          SIMULATOR_NAME: ${{ vars.SIMULATOR_NAME }}
+          SIMULATOR_IOS_VERSION: ${{ vars.SIMULATOR_IOS_VERSION }}
+          # 当前runner名称
           RUNNER_NAME: ${{ runner.name }}
-          
-          # 提升 XCodebuild 指令 timeout 時間, retry 次數
-          # 因為機器 Loading 比較大的時候可能 3 次就失敗了
+          # 延长Xcodebuild超时和重试次数（避免环境波动导致失败）
           FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: 60
           FASTLANE_XCODEBUILD_SETTINGS_RETRIES: 10
         run: |
-
-          # 如果是 self-hosted 在同一台機器起多個 Runner 會出現搶模擬器的問題 (文章後會講)
-          # 要避免這問題建議將模擬名稱命名成 Runner 名稱，每個 Runner 都設一個模擬器，這樣就不會互搶導致測試失敗
-          # e.g. bundle exec fastlane run_unit_tests device:"${RUNNER_NAME} (${SIMULATOR_IOS_VERSION})"
-          # 這邊是用 GitHub Hosted Runner 沒這問題，所以直接用 device:"${SIMULATOR_NAME} (${SIMULATOR_IOS_VERSION})"
-
-          # 發生錯誤不直接退出並將所有輸出都寫入 temp/testing_output.txt 檔案
-          # 後續我們會分析檔案內容區分出是 Build Failed 還是 Test Failed，Comment 不同訊息到 PR
+          # 关闭立即退出模式（即使命令失败也继续执行后续逻辑）
           set +e
           
-          # EXIT_CODE 儲存執行結果的 exit code.
-          # 0 = OK
-          # 1 = exit
-          EXIT_CODE=0
-          
-          # 所有輸出都寫入檔案
+          EXIT_CODE=0  # 存储命令退出码（0=成功，非0=失败）
+          # 执行Fastlane测试命令，并将输出写入临时文件（用于后续分析）
           bundle exec fastlane ${TEST_LANE} device:"${SIMULATOR_NAME} (${SIMULATOR_IOS_VERSION})" | tee "$RUNNER_TEMP/testing_output.txt"
-          # 如果目前 EXIT_CODE 是 0，則將 ${pipestatus[1]} 賦值給 EXIT_CODE
+          # 更新退出码（取fastlane命令的实际退出码）
           [[ $EXIT_CODE -eq 0 ]] && EXIT_CODE=${pipestatus[1]}
-
-          # 恢復出錯就退出
-          set -e
-
-          # 檢查 Testing Output
-          # 如果 Testing Output 包含 "Error building"，則設 is_build_error=true 給 Actions 環境變數，為 Build 就失敗
-          # 如果 Testing Output 包含 "Tests have failed"，則設 is_test_error=true 給 Actions 環境變數，為測試失敗
           
+          # 恢复立即退出模式
+          set -e
+          
+          # 分析输出文件，判断失败类型（构建失败/测试失败）
           if grep -q "Error building" "$RUNNER_TEMP/testing_output.txt"; then
-            echo "is_build_error=true" >> $GITHUB_OUTPUT
-            echo "❌ Detected Build Error"
+            echo "is_build_error=true" >> $GITHUB_OUTPUT  # 标记为构建失败
+            echo "❌ 检测到构建失败"
           elif grep -q "Tests have failed" "$RUNNER_TEMP/testing_output.txt"; then
-            echo "is_test_error=true" >> $GITHUB_OUTPUT
-            echo "❌ Detected Test Error"
+            echo "is_test_error=true" >> $GITHUB_OUTPUT  # 标记为测试失败
+            echo "❌ 检测到测试失败"
           fi
           
-
-          # 恢復 Exit Code Output
+          # 退出并返回实际结果码
           exit $EXIT_CODE
-          
-      # ========== Handle Result Steps ==========
-      
-      # 解析 *.junit 測試報告，並標記結果、Comment(如果是 PR 的話)
-      - name: Publish Test Report
-        # 直接復用別人寫好的 .junit Paser Actions: https://github.com/mikepenz/action-junit-report
-        uses: mikepenz/action-junit-report@v5
-        # if:
-        # 上一步(Testing) success or
-        # 上一步(Testing) failed and is_test_error (build failed 不執行這個 step)
-        if: ${{ (failure() && steps.testing.outputs.is_test_error == 'true') || success() }}
-        with:
-          check_name: "Testing Report"
-          comment: true
-          updateComment: false
-          require_tests: true
-          detailed_summary: true
-          report_paths: "./Product/fastlane/test_output/*.junit"
 
-      # 測試建置失敗 Comment
-      - name: Build Failure Comment
-        # if:
-        # 上一步(Testing) failed and is_build_error and 有 PR Number
-        # 
+      # ========== 结果处理步骤 ==========
+
+      # 10. 发布测试报告（生成JUnit报告并关联到PR）
+      - name: 发布测试报告
+        # 仅在测试成功或测试失败时执行（构建失败不执行）
+        if: ${{ (failure() && steps.testing.outputs.is_test_error == 'true') || success() }}
+        uses: mikepenz/action-junit-report@v5
+        with:
+          check_name: "测试报告"  # 在PR中显示的检查名称
+          comment: true  # 向PR提交评论
+          updateComment: false  # 不更新旧评论（保留历史）
+          require_tests: true  # 必须有测试结果
+          detailed_summary: true  # 显示详细摘要
+          report_paths: "./Product/fastlane/test_output/*.junit"  # JUnit报告路径
+
+      # 11. 构建失败时向PR提交评论
+      - name: 构建失败评论
+        # 仅在构建失败且存在PR时执行
         if: ${{ failure() && steps.testing.outputs.is_build_error == 'true' && github.event.pull_request.number }}
         uses: actions/github-script@v6
         env:
+          # 工作流运行地址（用于评论中的链接）
           action_url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}"
         with:
-            script: |
-              const action_url = process.env.action_url
-              const pullRequest = context.payload.pull_request || {}
-              const commitSha = pullRequest.head?.sha || context.sha
-              const creator = pullRequest.user?.login || context.actor
-        
-              const commentBody = [
-                `# 專案或測試建置失敗 ❌`,
-                `請確認您的 Pull Request 是否可以正確編譯與執行測試。`,
-                ``,
-                `🔗 **Action**: [View Workflow Run](${action_url})`,
-                `📝 **Commit**: ${commitSha}`,
-                `👤 **Author**: @${creator}`
-              ].join('\n')
-        
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body: commentBody
-              })
+          script: |
+            const action_url = process.env.action_url
+            const pullRequest = context.payload.pull_request || {}
+            const commitSha = pullRequest.head?.sha || context.sha  # 提交SHA
+            const creator = pullRequest.user?.login || context.actor  # PR创建者
+            
+            # 评论内容
+            const commentBody = [
+              `# 项目或测试构建失败 ❌`,
+              `请确认您的PR能否正常编译并执行测试。`,
+              ``,
+              `🔗 **工作流地址**: [查看详情](${action_url})`,
+              `📝 **提交**: ${commitSha}`,
+              `👤 **作者**: @${creator}`
+            ].join('\n')
+            
+            # 向PR提交评论
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: commentBody
+            })
