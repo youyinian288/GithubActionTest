@@ -1,0 +1,85 @@
+# This file contains the fastlane.tools configuration
+# You can find the documentation at https://docs.fastlane.tools
+#
+# For a list of all available actions, check out
+#
+#     https://docs.fastlane.tools/actions
+#
+# For a list of all available plugins, check out
+#
+#     https://docs.fastlane.tools/plugins/available-plugins
+#
+
+# Uncomment the line if you want fastlane to automatically update itself
+# update_fastlane
+
+default_platform(:ios)
+
+platform :ios do
+  desc "Run all tests (Unit Tests + UI Tests)"
+  lane :run_all_tests do |options|
+    device = options[:device]
+    scan(
+      scheme: "app-ci-cd-github-actions-demo",
+      device: device,
+      clean: true,
+      output_directory: "fastlane/test_output",
+      output_types: "junit"
+    )
+  end
+
+  desc "Run only Unit Tests"
+  lane :run_unit_tests do |options|
+    device = options[:device]
+    scan(
+      scheme: "app-ci-cd-github-actions-demo",
+      device: device,
+      clean: true,
+      only_testing: [
+        "app-ci-cd-github-actions-demoTests"
+      ],
+      output_directory: "fastlane/test_output",
+      output_types: "junit"
+    )
+  end
+
+  desc "Build and upload to Firebase App Distribution"
+  lane :beta do |options|
+    
+    if options[:version_number] && options[:version_number].to_s.strip != ""
+      increment_version_number(version_number: options[:version_number])
+    end
+
+    if options[:build_number] && options[:build_number].to_s.strip != ""
+      increment_build_number(build_number: options[:build_number])
+    end
+
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path: "app-ci-cd-github-actions-demo.xcodeproj",
+      team_id: ENV['TEAM_ID'],
+      code_sign_identity: "iPhone Developer",
+      sdk: "iphoneos*",
+      profile_name: "cicd"
+    )
+
+    gym(
+      scheme: "app-ci-cd-github-actions-demo",
+      clean: true,
+      export_method: "development",
+      output_directory: "fastlane/build",
+      output_name: "app-ci-cd-github-actions-demo.ipa",
+      export_options: {
+          provisioningProfiles: {
+            "com.test.appcicdgithubactionsdemo" => "cicd",
+          },
+      }
+    )
+
+    firebase_app_distribution(
+      app: "1:127683058219:ios:98896929fa131c7a80686e",
+      firebase_cli_token: ENV["FIREBASE_CLI_TOKEN"],
+      release_notes: options[:release_notes] || "New beta build"
+    )
+  end
+end
